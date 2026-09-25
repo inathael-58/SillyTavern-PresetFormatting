@@ -1,0 +1,194 @@
+/* ---------- editor under the Chat Completion preset dropdown ---------- */
+
+#pf_editor {
+    margin-top: 5px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    padding: 0 8px;
+}
+
+#pf_editor .pf_head {
+    gap: 8px;
+    padding: 4px 0;
+}
+
+#pf_editor .pf_title {
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+#pf_editor .pf_title i {
+    opacity: 0.7;
+}
+
+#pf_editor .pf_summary {
+    flex: 1;
+    min-width: 0;
+    opacity: 0.7;
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#pf_editor .inline-drawer-content {
+    padding-bottom: 8px;
+}
+
+.pf_note {
+    display: block;
+    opacity: 0.7;
+    margin: 4px 0 6px;
+    line-height: 1.35;
+}
+
+.pf_row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 8px;
+    margin: 5px 0;
+}
+
+.pf_row > .checkbox_label {
+    flex: 0 0 11.5em;
+    margin: 0;
+}
+
+.pf_row > .pf_val {
+    flex: 1 1 10em;
+    min-width: 0;
+    margin: 0;
+}
+
+.pf_row_text > .pf_val {
+    flex-basis: 100%;
+    resize: vertical;
+    min-height: 2.4em;
+}
+
+.pf_row.pf_off > .pf_val {
+    opacity: 0.4;
+    pointer-events: none;
+}
+
+.pf_val.pf_bad {
+    outline: 1px solid var(--warning, #e0a030);
+}
+
+.pf_warn,
+.pf_bad_text {
+    color: var(--warning, #e0a030);
+}
+
+.pf_good_text {
+    color: var(--active, #57b857);
+}
+
+.pf_btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.pf_btns .menu_button {
+    margin: 0;
+    width: auto;
+    padding: 4px 10px;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.pf_btns .menu_button[hidden] {
+    display: none !important;
+}
+
+/* ---------- settings panel ---------- */
+
+.pf_settings .pf_set_title {
+    margin: 12px 0 4px;
+    font-weight: bold;
+}
+
+.pf_settings .pf_set_row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+}
+
+.pf_settings .pf_set_row > span {
+    flex: 1 1 14em;
+}
+
+.pf_settings .pf_set_row .menu_button {
+    margin: 0;
+    width: auto;
+    padding: 4px 10px;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.pf_clean_fields .pf_count {
+    opacity: 0.6;
+}
+
+/* ---------- preset dropdown inside the Chat Top Info Bar connection row ---------- */
+
+#extensionConnectionProfiles.pf_has_preset {
+    gap: 6px;
+}
+
+#pf_tb_icon {
+    opacity: 0.8;
+}
+
+#pf_tb_preset {
+    flex: 1 1 0;
+    min-width: 0;
+    cursor: pointer;
+    overflow-x: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    opacity: 0.8;
+    background: none;
+    border: none;
+    background-image: url('/img/down-arrow.svg');
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    background-size: 8px 5px;
+    margin: 0;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    padding-right: 20px;
+}
+
+/* Two dropdowns share the row: let both shrink evenly instead of one eating the space. */
+#extensionConnectionProfiles.pf_has_preset #extensionConnectionProfilesSelect {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+#extensionConnectionProfiles.pf_has_preset #extensionConnectionProfilesStatus {
+    flex: 0 1 auto;
+    max-width: 30%;
+}
+
+#pf_tb_icon[hidden],
+#pf_tb_preset[hidden] {
+    display: none !important;
+}
+
+@media screen and (max-width: 600px) {
+    body.pf_hide_status_narrow #extensionConnectionProfiles.pf_has_preset #extensionConnectionProfilesStatus,
+    body.pf_hide_status_narrow #extensionConnectionProfiles.pf_has_preset #extensionConnectionProfilesStatus ~ .icon-svg {
+        display: none;
+    }
+
+    /* tighter arrows so more of each name fits */
+    #pf_tb_preset,
+    #extensionConnectionProfiles.pf_has_preset #extensionConnectionProfilesSelect {
+        padding-right: 16px;
+        background-position: right 3px center;
+    }
+}
