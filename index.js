@@ -5,6 +5,7 @@
  *   • Reasoning Template (+ Auto-Parse)
  *   • Start Reply With
  *   • Custom Stopping Strings
+ *   • Regex Preset (which regex scripts are on)
  * The values live inside the preset file (preset.extensions.presetFormatting),
  * so they follow the preset when it is selected, renamed, "saved as" or exported.
  *
@@ -32,6 +33,7 @@ const FORMAT_FIELDS = Object.freeze({
     autoParse: { label: 'Auto-Parse (reasoning)', short: 'Auto-Parse' },
     startReplyWith: { label: 'Start Reply With', short: 'Start Reply' },
     stopStrings: { label: 'Custom Stopping Strings', short: 'Stop' },
+    regexPreset: { label: 'Regex Preset', short: 'Regex' },
 });
 
 /** Connection profile fields that would override what the preset sets. */
@@ -39,6 +41,7 @@ const PROFILE_FIELDS = Object.freeze({
     'reasoning-template': { label: 'Reasoning Template', checked: true },
     'start-reply-with': { label: 'Start Reply With', checked: true },
     'stop-strings': { label: 'Custom Stopping Strings', checked: false },
+    'regex-preset': { label: 'Regex Preset', checked: true },
     'preset': { label: 'Settings Preset', checked: false },
 });
 
@@ -86,6 +89,11 @@ function normalize(raw) {
     if (typeof raw.autoParse === 'boolean') out.autoParse = raw.autoParse;
     if (typeof raw.startReplyWith === 'string') out.startReplyWith = raw.startReplyWith;
     if (typeof raw.stopStrings === 'string') out.stopStrings = raw.stopStrings;
+    if (typeof raw.regexPreset === 'string' && raw.regexPreset) {
+        out.regexPreset = raw.regexPreset;
+        // The name is kept too: ids differ on another install, so a shared preset falls back to the name.
+        if (typeof raw.regexPresetName === 'string' && raw.regexPresetName) out.regexPresetName = raw.regexPresetName;
+    }
     return out;
 }
 
@@ -118,7 +126,20 @@ const live = {
     autoParse: () => !!(/** @type {HTMLInputElement} */ ($id('reasoning_auto_parse'))?.checked),
     startReplyWith: () => String(/** @type {HTMLTextAreaElement} */ ($id('start_reply_with'))?.value ?? ''),
     stopStrings: () => String(/** @type {HTMLTextAreaElement} */ ($id('custom_stopping_strings'))?.value ?? ''),
+    regexPreset: () => String(/** @type {HTMLSelectElement} */ ($id('regex_presets'))?.value ?? ''),
 };
+
+/** Regex presets saved in the Regex extension: [{ id, name, ... }] */
+const regexPresets = () => (Array.isArray(ctx().extensionSettings.regex_presets) ? ctx().extensionSettings.regex_presets : []);
+const hasRegexPresets = () => !!$id('regex_presets');
+
+/** Find the stored regex preset by id, or by name when the id is unknown here. */
+function findRegexPreset(fmt) {
+    const list = regexPresets();
+    return list.find(p => p.id === fmt.regexPreset)
+        ?? (fmt.regexPresetName ? list.find(p => p.name === fmt.regexPresetName) : null)
+        ?? null;
+}
 
 const reasoningTemplateNames = () => [...($id('reasoning_select')?.options ?? [])].map(o => o.value).filter(Boolean);
 
@@ -148,6 +169,18 @@ function applyFormat(fmt) {
         if (live.stopStrings() !== fmt.stopStrings) $('#custom_stopping_strings').val(fmt.stopStrings).trigger('input');
         done.push('Stop Strings');
     }
+    if (fmt.regexPreset !== undefined && hasRegexPresets()) {
+        const rp = findRegexPreset(fmt);
+        const cmd = ctx().SlashCommandParser?.commands?.['regex-preset'];
+        if (!rp) {
+            toast.warn(`ไม่พบ Regex Preset “${esc(fmt.regexPresetName ?? fmt.regexPreset)}” (ถูกลบหรือเปลี่ยนชื่อ?)`);
+        } else if (cmd) {
+            // Re-applied on every switch, like a connection profile does: the regex preset also decides
+            // which of the newly selected preset's own regex scripts are on.
+            Promise.resolve(cmd.callback({ quiet: 'true' }, rp.id)).catch(err => console.error(LOG, 'regex preset', err));
+            done.push(`Regex: ${rp.name}`);
+        }
+    }
     return done;
 }
 
@@ -157,6 +190,7 @@ function summaryOf(fmt) {
     if (fmt.autoParse !== undefined) parts.push(`Auto-Parse ${fmt.autoParse ? 'เปิด' : 'ปิด'}`);
     if (fmt.startReplyWith !== undefined) parts.push(FORMAT_FIELDS.startReplyWith.short);
     if (fmt.stopStrings !== undefined) parts.push(FORMAT_FIELDS.stopStrings.short);
+    if (fmt.regexPreset !== undefined) parts.push(`Regex: ${findRegexPreset(fmt)?.name ?? fmt.regexPresetName ?? '?'}`);
     return parts.join(' · ');
 }
 
@@ -214,6 +248,10 @@ function buildEditor() {
                 <label class="checkbox_label"><input type="checkbox" class="pf_on"> Stop Strings</label>
                 <textarea id="pf_stop" class="text_pole textarea_compact pf_val" rows="2" placeholder='["\\n{{user}}:"]'></textarea>
             </div>
+            <div class="pf_row" data-f="regexPreset">
+                <label class="checkbox_label"><input type="checkbox" class="pf_on"> Regex Preset</label>
+                <select id="pf_regexpreset" class="text_pole pf_val"></select>
+            </div>
             <div class="pf_btns">
                 <div id="pf_capture" class="menu_button" title="ติ๊กทุกช่องแล้วใส่ค่าที่ SillyTavern ใช้อยู่ตอนนี้"><i class="fa-solid fa-camera"></i> ดึงค่าที่ใช้อยู่</div>
                 <div id="pf_clear" class="menu_button" title="เลิกให้ preset นี้กำหนดค่าใด ๆ"><i class="fa-solid fa-eraser"></i> ล้าง</div>
@@ -244,6 +282,8 @@ function buildEditor() {
         const fmt = {};
         for (const f of Object.keys(FORMAT_FIELDS)) fmt[f] = live[f]();
         if (!fmt.reasoningTemplate) delete fmt.reasoningTemplate;
+        fmt.regexPresetName = regexPresets().find(p => p.id === fmt.regexPreset)?.name;
+        if (!fmt.regexPresetName) delete fmt.regexPreset; // no regex presets saved yet
         fillEditor(normalize(fmt));
         commitEditor({});
         toast.ok(`จำค่าปัจจุบันไว้ใน “${esc(currentPresetName())}” แล้ว`);
@@ -279,6 +319,7 @@ function editorFormat() {
         const v = r.querySelector('.pf_val').value;
         fmt[f] = f === 'autoParse' ? v === 'true' : v;
     });
+    if (fmt.regexPreset) fmt.regexPresetName = regexPresets().find(p => p.id === fmt.regexPreset)?.name ?? readFormat().regexPresetName;
     return normalize(fmt);
 }
 
@@ -291,6 +332,16 @@ function fillEditor(fmt) {
         const wanted = fmt.reasoningTemplate;
         const list = wanted && !names.includes(wanted) ? [...names, wanted] : names;
         sel.innerHTML = list.map(n => `<option value="${esc(n)}">${esc(n)}${names.includes(n) ? '' : ' (หาไม่พบ)'}</option>`).join('');
+
+        // Regex presets: show by name, store by id. A stored one that no longer exists stays visible as "(หาไม่พบ)".
+        const rsel = /** @type {HTMLSelectElement} */ ($id('pf_regexpreset'));
+        const found = fmt.regexPreset !== undefined ? findRegexPreset(fmt) : null;
+        if (found) fmt = { ...fmt, regexPreset: found.id };
+        const opts = regexPresets().map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`);
+        if (fmt.regexPreset !== undefined && !found) opts.push(`<option value="${esc(fmt.regexPreset)}">${esc(fmt.regexPresetName ?? fmt.regexPreset)} (หาไม่พบ)</option>`);
+        rsel.innerHTML = opts.join('') || '<option value="">(ยังไม่มี Regex Preset)</option>';
+        rsel.closest('.pf_row').hidden = !hasRegexPresets();
+
         editor.querySelectorAll('.pf_row').forEach(r => {
             const f = r.dataset.f;
             const has = fmt[f] !== undefined;
@@ -330,8 +381,16 @@ function validateStop() {
     warn.textContent = bad ? 'Stopping Strings ต้องเป็น JSON array เช่น ["\\n{{user}}:"]' : '';
 }
 
+let regexListObserved = false;
+
 function renderEditor() {
     if (!buildEditor()) return;
+    // The Regex extension builds its preset list later than we start; watch it once it exists.
+    const rp = $id('regex_presets');
+    if (rp && !regexListObserved) {
+        regexListObserved = true;
+        new MutationObserver(() => renderEditor()).observe(rp, { childList: true });
+    }
     fillEditor(readFormat());
 }
 

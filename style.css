@@ -50,6 +50,10 @@
     margin: 5px 0;
 }
 
+.pf_row[hidden] {
+    display: none;
+}
+
 .pf_row > .checkbox_label {
     flex: 0 0 11.5em;
     margin: 0;
