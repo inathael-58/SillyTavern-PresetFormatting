@@ -6,6 +6,8 @@
  *   • Start Reply With
  *   • Custom Stopping Strings
  *   • Regex Preset (which regex scripts are on)
+ * and can keep character (scoped) / preset-embedded regex scripts switched on,
+ * which a Regex Preset would otherwise switch off on every other card or preset.
  * The values live inside the preset file (preset.extensions.presetFormatting),
  * so they follow the preset when it is selected, renamed, "saved as" or exported.
  *
@@ -25,6 +27,8 @@ const DEFAULTS = Object.freeze({
     hideStatusNarrow: true,
     notify: true,
     lastCleanup: null,
+    scopedAlwaysOn: true,
+    presetScriptsAlwaysOn: false,
 });
 
 /** What a preset can carry, and the SillyTavern control each one drives. */
@@ -448,6 +452,56 @@ function applyBodyClasses() {
     document.body.classList.toggle('pf_hide_status_narrow', !!s.hideStatusNarrow);
 }
 
+// ---------------------------------------------------------------- keep regex scripts switched on
+
+/*
+ * A Regex Preset (applied by us, by a connection profile or from the Regex panel) switches OFF every
+ * script missing from its snapshot. Its snapshot of character (scoped) and preset-embedded scripts only
+ * knows the character / preset it was saved with, so on any other card or preset those scripts go off —
+ * and stay off, since the flag is written into the card / preset file. Here they are switched back on.
+ * Applying a Regex Preset always ends with a chat reload (CHAT_CHANGED), which is when we check.
+ */
+
+let enforcing = false;
+
+const allOn = scripts => scripts.map(x => (x?.disabled ? { ...x, disabled: false } : x));
+const anyOff = scripts => Array.isArray(scripts) && scripts.some(x => x?.disabled);
+
+async function enforceRegexOn() {
+    const s = settings();
+    if (enforcing || (!s.scopedAlwaysOn && !s.presetScriptsAlwaysOn)) return;
+    const c = ctx();
+    enforcing = true;
+    const turnedOn = [];
+    try {
+        if (s.scopedAlwaysOn && c.characterId !== undefined && c.characterId !== null && !c.groupId) {
+            const scripts = c.characters?.[c.characterId]?.data?.extensions?.regex_scripts;
+            if (anyOff(scripts)) {
+                await c.writeExtensionField(c.characterId, 'regex_scripts', allOn(scripts));
+                turnedOn.push(`scoped ${scripts.filter(x => x?.disabled).length}`);
+            }
+        }
+        const pm = presetManager();
+        if (s.presetScriptsAlwaysOn && pm && isChatCompletion()) {
+            const scripts = pm.readPresetExtensionField({ path: 'regex_scripts' });
+            if (anyOff(scripts)) {
+                await pm.writePresetExtensionField({ path: 'regex_scripts', value: allOn(scripts) });
+                turnedOn.push(`preset ${scripts.filter(x => x?.disabled).length}`);
+            }
+        }
+        if (turnedOn.length) {
+            console.log(LOG, 'regex scripts switched back on:', turnedOn.join(', '));
+            await c.reloadCurrentChat(); // re-render with the scripts on; also refreshes the Regex panel
+        }
+    } catch (e) {
+        console.error(LOG, 'could not switch regex scripts on', e);
+    } finally {
+        enforcing = false;
+    }
+}
+
+const enforceRegexOnSoon = debounce(enforceRegexOn, 400);
+
 // ---------------------------------------------------------------- connection profile clean-up
 
 const ccProfiles = () => (ctx().extensionSettings.connectionManager?.profiles ?? []).filter(p => p.mode === 'cc');
@@ -523,6 +577,11 @@ function renderSettings() {
                 <label class="checkbox_label" title="ข้อความ API – model ด้านขวาของแถบกินที่ ซ่อนเมื่อจอกว้างไม่ถึง 600px"><input type="checkbox" id="pf_hidestatus"> ซ่อนข้อความ API – model บนจอแคบ</label>
                 <small id="pf_topbar_state" class="pf_note"></small>
 
+                <div class="pf_set_title">Regex scripts</div>
+                <label class="checkbox_label"><input type="checkbox" id="pf_scoped_on"> เปิด Scoped scripts (regex ในการ์ดตัวละคร) เสมอ</label>
+                <label class="checkbox_label"><input type="checkbox" id="pf_presetrx_on"> เปิด Preset scripts (regex ในไฟล์ preset) เสมอ</label>
+                <small class="pf_note">Regex Preset (และ connection profile ที่เก็บ Regex Preset ไว้) จะปิด script ทุกตัวที่ไม่ได้อยู่ในชุดตอนบันทึก ซึ่งรวมถึง regex ของการ์ดตัวอื่นและของ preset ตัวอื่นด้วย ติ๊กไว้แล้ว script ที่ถูกปิดจะเปิดกลับเองทันที · ข้อเสียคือถ้าไปปิดทีละตัวเอง พอเปลี่ยนแชทก็จะถูกเปิดคืน</small>
+
                 <div class="pf_set_title">ผูก preset กับ connection</div>
                 <div class="pf_set_row">
                     <span id="pf_bind_state"></span>
@@ -549,6 +608,8 @@ function renderSettings() {
     bind('pf_notify', 'notify');
     bind('pf_topbar', 'topBar', () => { syncTopBar(); renderSettingsState(); });
     bind('pf_hidestatus', 'hideStatusNarrow', applyBodyClasses);
+    bind('pf_scoped_on', 'scopedAlwaysOn', enforceRegexOn);
+    bind('pf_presetrx_on', 'presetScriptsAlwaysOn', enforceRegexOn);
 
     $id('pf_clean_fields').innerHTML = Object.entries(PROFILE_FIELDS).map(([f, { label, checked }]) =>
         `<label class="checkbox_label"><input type="checkbox" data-f="${f}" ${checked ? 'checked' : ''}> ${esc(label)} <small class="pf_count" data-f="${f}"></small></label>`).join('');
@@ -608,6 +669,8 @@ function init() {
 
     const { eventSource, event_types: E } = ctx();
     eventSource.on(E.PRESET_CHANGED, onPresetChanged);
+    eventSource.on(E.PRESET_CHANGED, () => enforceRegexOnSoon());
+    eventSource.on(E.CHAT_CHANGED, () => enforceRegexOnSoon());
     if (E.MAIN_API_CHANGED) eventSource.on(E.MAIN_API_CHANGED, () => { syncTopBar(); renderEditor(); });
     let started = false;
     const start = () => {
