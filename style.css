@@ -196,3 +196,8 @@
         background-position: right 3px center;
     }
 }
+
+.pf_version {
+    opacity: 0.6;
+    font-weight: normal;
+}

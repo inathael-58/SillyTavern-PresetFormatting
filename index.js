@@ -20,6 +20,8 @@
 const MODULE = 'preset_formatting';
 const FIELD = 'presetFormatting';
 const LOG = '[PresetFormatting]';
+const VERSION = '1.3.0'; // keep in sync with manifest.json
+const BASE_URL = new URL('.', import.meta.url);
 
 const DEFAULTS = Object.freeze({
     enabled: true,
@@ -567,7 +569,7 @@ function renderSettings() {
     <div id="pf_settings" class="pf_settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>Preset Formatting</b>
+                <b>Preset Formatting <small class="pf_version">v${VERSION}</small></b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
@@ -659,6 +661,44 @@ function renderSettingsState() {
     }
 }
 
+// ---------------------------------------------------------------- stale-code check
+//
+// SillyTavern loads extension files by a fixed URL, and a home-screen web app
+// on iOS rarely does a real reload, so after "Update" the old code can keep
+// running for a long time. Compare with the manifest on the server; if it is
+// newer, refresh the cached files explicitly and reload.
+
+let versionCheckedAt = 0;
+let versionToastShown = false;
+
+async function checkForNewVersion() {
+    if (versionToastShown || Date.now() - versionCheckedAt < 10 * 60_000) return;
+    versionCheckedAt = Date.now();
+    let remote;
+    try {
+        const res = await fetch(new URL('manifest.json', BASE_URL), { cache: 'no-store' });
+        if (!res.ok) return;
+        remote = String((await res.json())?.version ?? '');
+    } catch { return; }
+    if (!remote || remote === VERSION) return;
+    versionToastShown = true;
+    globalThis.toastr?.info(`ติดตั้ง v${esc(remote)} ไว้แล้ว แต่หน้านี้ยังรัน v${VERSION} อยู่<br>แตะที่นี่เพื่อโหลดเวอร์ชันใหม่`, 'Preset Formatting', {
+        timeOut: 0, extendedTimeOut: 0, closeButton: true, escapeHtml: false,
+        onclick: () => reloadWithFreshFiles(),
+    });
+}
+
+async function reloadWithFreshFiles() {
+    try {
+        // cache: 'reload' fetches from the server and overwrites the browser's cached copy,
+        // so the page reload below picks up the new files.
+        await Promise.all(['index.js', 'style.css', 'manifest.json'].map(f =>
+            fetch(new URL(f, BASE_URL), { cache: 'reload' }).catch(() => null)));
+    } finally {
+        location.reload();
+    }
+}
+
 // ---------------------------------------------------------------- init
 
 function init() {
@@ -690,8 +730,10 @@ function init() {
     if (E.PRESET_RENAMED) eventSource.on(E.PRESET_RENAMED, () => { syncTopBar(); renderEditor(); });
     if (E.PRESET_DELETED) eventSource.on(E.PRESET_DELETED, () => { syncTopBar(); renderEditor(); });
 
-    globalThis.PresetFormatting = { readFormat, writeFormat, applyFormat, settings, syncTopBar, renderEditor };
-    console.log(LOG, 'loaded');
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForNewVersion(); });
+    setTimeout(checkForNewVersion, 3000);
+    globalThis.PresetFormatting = { VERSION, checkForNewVersion, reloadWithFreshFiles, readFormat, writeFormat, applyFormat, settings, syncTopBar, renderEditor };
+    console.log(LOG, 'loaded', `v${VERSION}`);
 }
 
 if (typeof jQuery === 'function') jQuery(init); else init();
