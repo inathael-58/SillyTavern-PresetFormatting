@@ -31,6 +31,21 @@ Extensions → Install extension → วาง URL ของ repo นี้
    - ติ๊ก **Settings Preset** ด้วย ถ้าอยากให้การสลับ connection ไม่ลาก preset ติดมา (แนะนำถ้าจะใช้ dropdown สองช่อง)
 4. บน Chat Top Info Bar กดไอคอนปลั๊ก 🔌 เพื่อเปิดแถว connection แล้วช่อง preset จะอยู่ทางซ้าย
 
+## ล็อก preset กับแชท
+
+ล็อก **เฉพาะ preset** ไว้กับแชท (ไม่ผูก connection) เปิดแชทนั้นเมื่อไหร่ก็จะสลับไป preset ที่ล็อกไว้ให้ ส่วน connection ใช้ตัวที่เลือกอยู่ต่อไป
+
+- กดหมุด 📌 ข้างช่อง preset บน Chat Top Info Bar
+  - หมุดจาง = แชทนี้ยังไม่ล็อก แตะเพื่อล็อก preset ที่ใช้อยู่
+  - หมุดเขียว = ล็อกไว้กับ preset ที่ใช้อยู่ แตะเพื่อปลดล็อก
+  - หมุดส้ม = ล็อกไว้กับ preset อื่น (เพิ่งเปลี่ยนเอง) แตะเพื่อล็อกเป็น preset ที่ใช้อยู่ ถ้าไม่แตะ เปิดแชทครั้งหน้าจะกลับไป preset ที่ล็อกไว้
+- หรือตั้งจากหน้าตั้งค่า Preset Formatting → **ล็อก preset กับแชท**
+- หรือพิมพ์ `/preset-lock` (ล็อก preset ที่ใช้อยู่) · `/preset-lock ชื่อ preset` · `/preset-lock off` (ปลดล็อก) · `/preset-lock ?` (บอกชื่อที่ล็อกไว้)
+
+ล็อกเก็บอยู่ในไฟล์แชท (`chat_metadata.presetFormatting.lockedPreset`) branch ที่แตกออกมาจะได้ล็อกเดิมติดไปด้วย ถ้าแตก branch ด้วย [Alternate Universe](https://github.com/inathael-58/SillyTavern-Alternate-Universe) แล้วเลือก preset ใหม่ ล็อกของ branch จะถูกเปลี่ยนเป็น preset ใหม่ให้
+
+**ใช้คู่กับ Character Locks (STCL)** STCL ล็อก preset + connection เป็นคู่ และจำไว้ในไฟล์แชทเหมือนกัน ถ้าเปิด *Remember per chat* ของ STCL ไว้ด้วย สองตัวจะสลับ preset แย่งกันและแชทจะรีโหลดซ้ำหลายรอบ ให้ปิด *Remember per chat* ของ STCL (หน้าตั้งค่าจะเตือนถ้ายังเปิดอยู่) จะเก็บ *Remember per character* ของ STCL ไว้ก็ได้ แต่ถ้าการ์ดนั้นมีล็อกของ STCL ด้วย ทั้งสองก็ยังแย่งกันได้
+
 ## ตัวเลือก
 
 | ตัวเลือก | ทำอะไร |
@@ -41,6 +56,7 @@ Extensions → Install extension → วาง URL ของ repo นี้
 | ซ่อนข้อความ API – model บนจอแคบ | จอกว้างไม่ถึง 600px (มือถือ) จะซ่อนข้อความด้านขวาของแถว ให้สองช่องมีที่ยาวขึ้น |
 | เปิด Scoped scripts เสมอ (ค่าเริ่มต้น: เปิด) | regex ในการ์ดตัวละครที่ถูกปิดจะถูกเปิดกลับทันที |
 | เปิด Preset scripts เสมอ (ค่าเริ่มต้น: ปิด) | เหมือนกัน แต่ใช้กับ regex ที่ฝังอยู่ในไฟล์ preset |
+| เปิดแชทที่ล็อกไว้แล้วสลับไป preset นั้นให้ (ค่าเริ่มต้น: เปิด) | ปิดแล้วล็อกที่ตั้งไว้ยังอยู่ในแชท แต่จะไม่สลับ preset ให้ |
 
 ### ทำไม regex ของการ์ดถึงปิดเอง
 

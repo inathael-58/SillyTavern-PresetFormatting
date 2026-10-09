@@ -15,12 +15,15 @@
  * connection itself (source, endpoint, key, model, post-processing). To make that
  * pairing quick, a preset dropdown is added next to the connection dropdown of
  * the Chat Top Info Bar extension.
+ *
+ * A chat can also be locked to a preset (chat_metadata.presetFormatting.lockedPreset):
+ * opening the chat switches to that preset and leaves the connection alone.
  */
 
 const MODULE = 'preset_formatting';
 const FIELD = 'presetFormatting';
 const LOG = '[PresetFormatting]';
-const VERSION = '1.3.0'; // keep in sync with manifest.json
+const VERSION = '1.4.0'; // keep in sync with manifest.json
 const BASE_URL = new URL('.', import.meta.url);
 
 const DEFAULTS = Object.freeze({
@@ -31,6 +34,7 @@ const DEFAULTS = Object.freeze({
     lastCleanup: null,
     scopedAlwaysOn: true,
     presetScriptsAlwaysOn: false,
+    chatLock: true,
 });
 
 /** What a preset can carry, and the SillyTavern control each one drives. */
@@ -205,6 +209,7 @@ function summaryOf(fmt) {
 async function onPresetChanged(e) {
     if (e?.apiId && e.apiId !== 'openai') return;
     syncTopBar();
+    syncLockUi();
     renderEditor();
     if (!settings().enabled) return;
     const name = e?.name ?? currentPresetName();
@@ -404,6 +409,7 @@ function renderEditor() {
 
 let tbIcon = null;
 let tbSelect = null;
+let tbLock = null;
 
 function buildTopBar() {
     const host = $id('extensionConnectionProfiles');
@@ -421,8 +427,15 @@ function buildTopBar() {
             if (!pm || !tbSelect.value) return;
             await pm.selectPreset(tbSelect.value);
         });
+        tbLock = document.createElement('i');
+        tbLock.id = 'pf_tb_lock';
+        tbLock.className = 'fa-fw fa-solid fa-thumbtack';
+        tbLock.setAttribute('role', 'button');
+        tbLock.tabIndex = 0;
+        tbLock.addEventListener('click', () => toggleChatLock());
+        tbLock.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleChatLock(); } });
     }
-    if (!host.contains(tbSelect)) host.prepend(tbIcon, tbSelect);
+    if (!host.contains(tbSelect)) host.prepend(tbIcon, tbSelect, tbLock);
     syncTopBar();
     return true;
 }
@@ -434,6 +447,7 @@ function syncTopBar() {
     tbSelect.hidden = !show;
     tbIcon.hidden = !show;
     tbSelect.closest('#extensionConnectionProfiles')?.classList.toggle('pf_has_preset', show);
+    syncLockUi();
     if (!show) return;
     if (tbSelect.innerHTML !== main.innerHTML) tbSelect.innerHTML = main.innerHTML;
     tbSelect.value = main.value;
@@ -452,6 +466,136 @@ function watchForTopBar() {
 function applyBodyClasses() {
     const s = settings();
     document.body.classList.toggle('pf_hide_status_narrow', !!s.hideStatusNarrow);
+}
+
+// ---------------------------------------------------------------- per-chat preset lock
+
+/*
+ * chat_metadata.presetFormatting.lockedPreset holds the preset a chat is locked to. Opening the chat
+ * (or reloading it) switches to that preset; the connection profile is not touched. The lock stays
+ * put when the preset is changed by hand, until it is re-locked or unlocked. Branches copy
+ * chat_metadata, so a branch starts with its parent's lock (Alternate Universe re-points it).
+ */
+
+const hasChat = () => !!ctx().chatId;
+
+function chatLock() {
+    const v = ctx().chatMetadata?.[FIELD]?.lockedPreset;
+    return typeof v === 'string' ? v : '';
+}
+
+/** @param {string} name preset to lock the open chat to, '' to unlock */
+async function setChatLock(name) {
+    const c = ctx();
+    if (!c.chatId || !c.chatMetadata) return false;
+    const meta = c.chatMetadata;
+    if (name) {
+        meta[FIELD] = { ...(meta[FIELD] ?? {}), lockedPreset: name };
+    } else if (meta[FIELD]) {
+        delete meta[FIELD].lockedPreset;
+        if (!Object.keys(meta[FIELD]).length) delete meta[FIELD];
+    }
+    await c.saveMetadata();
+    syncLockUi();
+    return true;
+}
+
+async function toggleChatLock() {
+    if (!hasChat()) return toast.info('เปิดแชทก่อน');
+    if (!isChatCompletion()) return toast.info('ล็อก preset ใช้ได้กับ Chat Completion เท่านั้น');
+    const cur = currentPresetName();
+    if (chatLock() && chatLock() === cur) {
+        await setChatLock('');
+        toast.info('ปลดล็อก preset ของแชทนี้แล้ว');
+    } else {
+        await setChatLock(cur);
+        toast.ok(`ล็อก “${esc(cur)}” ไว้กับแชทนี้แล้ว`);
+    }
+}
+
+let lockWarned = '';
+
+/** Switch to the open chat's locked preset, if it has one and it is not already selected. */
+async function applyChatLock() {
+    syncLockUi();
+    if (!settings().chatLock || !isChatCompletion()) return;
+    const name = chatLock();
+    if (!name || name === currentPresetName()) return;
+    const pm = presetManager();
+    const value = pm?.findPreset(name);
+    if (value === undefined || value === null) {
+        const key = `${ctx().chatId}|${name}`;
+        if (lockWarned !== key) {
+            lockWarned = key;
+            toast.warn(`แชทนี้ล็อกไว้กับ preset “${esc(name)}” แต่หา preset นี้ไม่พบ (ถูกลบหรือเปลี่ยนชื่อ?)`);
+        }
+        return;
+    }
+    console.log(LOG, 'chat lock →', name);
+    await pm.selectPreset(value);
+}
+
+// A chat reload (Regex Preset, other extensions) fires CHAT_CHANGED again; coalesce the bursts.
+const applyChatLockSoon = debounce(() => applyChatLock().catch(e => console.error(LOG, 'chat lock', e)), 150);
+
+/** Character Locks (STCL) also switches presets per chat; with both on, they undo each other. */
+const stclChatMemory = () => !!ctx().extensionSettings.STCL?.moduleSettings?.enableChatMemory;
+
+function lockState() {
+    const lock = chatLock();
+    const cur = currentPresetName();
+    if (!lock) return { cls: 'pf_lock_off', title: `ล็อก “${cur}” ไว้กับแชทนี้`, text: 'แชทนี้ไม่ได้ล็อก preset' };
+    if (lock === cur) return { cls: 'pf_lock_on', title: `แชทนี้ล็อกไว้กับ “${lock}” · แตะเพื่อปลดล็อก`, text: `แชทนี้ล็อกไว้กับ <b>${esc(lock)}</b>` };
+    return {
+        cls: 'pf_lock_diff',
+        title: `แชทนี้ล็อกไว้กับ “${lock}” แต่ตอนนี้ใช้ “${cur}” · แตะเพื่อล็อกเป็น “${cur}”`,
+        text: `แชทนี้ล็อกไว้กับ <b>${esc(lock)}</b> แต่ตอนนี้ใช้ <b>${esc(cur)}</b>`,
+    };
+}
+
+function syncLockUi() {
+    const show = !!settings().chatLock && hasChat() && isChatCompletion();
+    const st = show ? lockState() : null;
+    if (tbLock) {
+        tbLock.hidden = !show || !!tbSelect?.hidden;
+        tbLock.classList.remove('pf_lock_off', 'pf_lock_on', 'pf_lock_diff');
+        if (st) {
+            tbLock.classList.add(st.cls);
+            tbLock.title = st.title;
+        }
+    }
+    const row = $id('pf_lock_row');
+    if (row) {
+        row.hidden = !show;
+        if (st) {
+            $id('pf_lock_state').innerHTML = st.text;
+            $id('pf_lock_toggle').innerHTML = st.cls === 'pf_lock_on'
+                ? '<i class="fa-solid fa-lock-open"></i> ปลดล็อก'
+                : `<i class="fa-solid fa-thumbtack"></i> ล็อก ${esc(currentPresetName())}`;
+        }
+    }
+    const warn = $id('pf_lock_stcl');
+    if (warn) warn.hidden = !(settings().chatLock && stclChatMemory());
+}
+
+function registerCommands() {
+    const { SlashCommandParser, SlashCommand } = ctx();
+    if (!SlashCommandParser?.addCommandObject || !SlashCommand?.fromProps) return;
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'preset-lock',
+        callback: async (_args, value) => {
+            const arg = String(value ?? '').trim();
+            if (!hasChat()) { toast.info('เปิดแชทก่อน'); return ''; }
+            if (arg === 'off') { await setChatLock(''); return ''; }
+            if (arg === '?') return chatLock();
+            const name = arg || currentPresetName();
+            if (presetManager()?.findPreset(name) == null) { toast.warn(`ไม่พบ preset “${esc(name)}”`); return ''; }
+            await setChatLock(name);
+            await applyChatLock();
+            return name;
+        },
+        helpString: 'ล็อก Chat Completion preset ไว้กับแชทนี้ เปิดแชทนี้เมื่อไหร่จะสลับไป preset นั้นให้ (connection ไม่เปลี่ยน) · ไม่ใส่ชื่อ = preset ที่ใช้อยู่ · <code>off</code> = ปลดล็อก · <code>?</code> = บอกชื่อ preset ที่ล็อกไว้',
+    }));
 }
 
 // ---------------------------------------------------------------- keep regex scripts switched on
@@ -579,6 +723,15 @@ function renderSettings() {
                 <label class="checkbox_label" title="ข้อความ API – model ด้านขวาของแถบกินที่ ซ่อนเมื่อจอกว้างไม่ถึง 600px"><input type="checkbox" id="pf_hidestatus"> ซ่อนข้อความ API – model บนจอแคบ</label>
                 <small id="pf_topbar_state" class="pf_note"></small>
 
+                <div class="pf_set_title">ล็อก preset กับแชท</div>
+                <label class="checkbox_label"><input type="checkbox" id="pf_chatlock"> เปิดแชทที่ล็อกไว้แล้วสลับไป preset นั้นให้</label>
+                <div id="pf_lock_row" class="pf_set_row">
+                    <span id="pf_lock_state"></span>
+                    <div id="pf_lock_toggle" class="menu_button"></div>
+                </div>
+                <small class="pf_note">ล็อกแค่ preset ไม่แตะ connection · กดหมุด 📌 ข้างช่อง preset บน Top Info Bar หรือพิมพ์ <code>/preset-lock</code> ก็ได้ · branch ที่แตกจากแชทจะได้ล็อกเดิมติดไปด้วย</small>
+                <small id="pf_lock_stcl" class="pf_note pf_warn" hidden>Character Locks (STCL) เปิด "Remember per chat" อยู่ มันจะสลับ preset ตามที่ตัวเองจำไว้ แย่งกับล็อกนี้และทำให้แชทรีโหลดซ้ำ ปิด Remember per chat ของ STCL (หรือปิด STCL) ถ้าจะใช้ล็อกของที่นี่</small>
+
                 <div class="pf_set_title">Regex scripts</div>
                 <label class="checkbox_label"><input type="checkbox" id="pf_scoped_on"> เปิด Scoped scripts (regex ในการ์ดตัวละคร) เสมอ</label>
                 <label class="checkbox_label"><input type="checkbox" id="pf_presetrx_on"> เปิด Preset scripts (regex ในไฟล์ preset) เสมอ</label>
@@ -612,6 +765,8 @@ function renderSettings() {
     bind('pf_hidestatus', 'hideStatusNarrow', applyBodyClasses);
     bind('pf_scoped_on', 'scopedAlwaysOn', enforceRegexOn);
     bind('pf_presetrx_on', 'presetScriptsAlwaysOn', enforceRegexOn);
+    bind('pf_chatlock', 'chatLock', () => { syncLockUi(); applyChatLockSoon(); });
+    $id('pf_lock_toggle').addEventListener('click', () => toggleChatLock());
 
     $id('pf_clean_fields').innerHTML = Object.entries(PROFILE_FIELDS).map(([f, { label, checked }]) =>
         `<label class="checkbox_label"><input type="checkbox" data-f="${f}" ${checked ? 'checked' : ''}> ${esc(label)} <small class="pf_count" data-f="${f}"></small></label>`).join('');
@@ -648,6 +803,7 @@ function renderSettingsState() {
         const n = counts[el.dataset.f];
         el.textContent = n ? `(${n} profile)` : '(ไม่มี)';
     });
+    syncLockUi();
     const last = settings().lastCleanup;
     const undo = $id('pf_clean_undo');
     undo.hidden = !last;
@@ -711,7 +867,9 @@ function init() {
     eventSource.on(E.PRESET_CHANGED, onPresetChanged);
     eventSource.on(E.PRESET_CHANGED, () => enforceRegexOnSoon());
     eventSource.on(E.CHAT_CHANGED, () => enforceRegexOnSoon());
+    eventSource.on(E.CHAT_CHANGED, () => { syncLockUi(); applyChatLockSoon(); });
     if (E.MAIN_API_CHANGED) eventSource.on(E.MAIN_API_CHANGED, () => { syncTopBar(); renderEditor(); });
+    registerCommands();
     let started = false;
     const start = () => {
         if (started) return;
@@ -719,6 +877,7 @@ function init() {
         renderEditor();
         watchForTopBar();
         renderSettingsState();
+        applyChatLockSoon(); // the chat open at start-up
         const main = presetSelect();
         if (main) {
             main.addEventListener('change', () => setTimeout(syncTopBar, 0));
@@ -732,7 +891,7 @@ function init() {
 
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForNewVersion(); });
     setTimeout(checkForNewVersion, 3000);
-    globalThis.PresetFormatting = { VERSION, checkForNewVersion, reloadWithFreshFiles, readFormat, writeFormat, applyFormat, settings, syncTopBar, renderEditor };
+    globalThis.PresetFormatting = { VERSION, checkForNewVersion, reloadWithFreshFiles, readFormat, writeFormat, applyFormat, settings, syncTopBar, renderEditor, getChatLock: chatLock, setChatLock, applyChatLock };
     console.log(LOG, 'loaded', `v${VERSION}`);
 }
 

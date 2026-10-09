@@ -178,7 +178,34 @@
     max-width: 30%;
 }
 
+#pf_tb_lock {
+    cursor: pointer;
+    flex: 0 0 auto;
+    transition: opacity 0.15s, transform 0.15s;
+}
+
+#pf_tb_lock.pf_lock_off {
+    opacity: 0.35;
+    transform: rotate(45deg);
+}
+
+#pf_tb_lock.pf_lock_on {
+    opacity: 1;
+    color: var(--active, #57b857);
+}
+
+#pf_tb_lock.pf_lock_diff {
+    opacity: 1;
+    color: var(--warning, #e0a030);
+}
+
+#pf_lock_row[hidden],
+#pf_lock_stcl[hidden] {
+    display: none !important;
+}
+
 #pf_tb_icon[hidden],
+#pf_tb_lock[hidden],
 #pf_tb_preset[hidden] {
     display: none !important;
 }
