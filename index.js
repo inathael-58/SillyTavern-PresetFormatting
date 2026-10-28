@@ -23,7 +23,7 @@
 const MODULE = 'preset_formatting';
 const FIELD = 'presetFormatting';
 const LOG = '[PresetFormatting]';
-const VERSION = '1.4.0'; // keep in sync with manifest.json
+const VERSION = '1.4.1'; // keep in sync with manifest.json
 const BASE_URL = new URL('.', import.meta.url);
 
 const DEFAULTS = Object.freeze({
@@ -82,6 +82,25 @@ const toast = {
 function debounce(fn, ms) {
     let t = null;
     return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+/*
+ * Both the chat lock and "keep regex scripts on" end in a chat reload, and a reload is what triggers
+ * them. If something else keeps undoing what they did (Character Locks, a connection profile that
+ * carries a preset or a Regex Preset, a preset script…), the two sides take turns forever: every round
+ * writes the card or switches the preset and re-renders the whole chat, and the page freezes (on a
+ * phone it never recovers). Allow a few rounds per chat, then stop and say so.
+ */
+const LOOP_WINDOW_MS = 20_000;
+const LOOP_MAX_ROUNDS = 3;
+
+/** Record one round for `key`; true when it is more than LOOP_MAX_ROUNDS within LOOP_WINDOW_MS. */
+function looping(log, key) {
+    const now = Date.now();
+    const recent = (log.get(key) ?? []).filter(t => now - t < LOOP_WINDOW_MS);
+    recent.push(now);
+    log.set(key, recent);
+    return recent.length > LOOP_MAX_ROUNDS;
 }
 
 const isChatCompletion = () => ctx().mainApi === 'openai';
@@ -514,6 +533,8 @@ async function toggleChatLock() {
 }
 
 let lockWarned = '';
+const lockRounds = new Map(); // chat|preset -> times we switched to the locked preset (see looping)
+let lockFightWarned = '';
 
 /** Switch to the open chat's locked preset, if it has one and it is not already selected. */
 async function applyChatLock() {
@@ -523,11 +544,21 @@ async function applyChatLock() {
     if (!name || name === currentPresetName()) return;
     const pm = presetManager();
     const value = pm?.findPreset(name);
+    const key = `${ctx().chatId}|${name}`;
     if (value === undefined || value === null) {
-        const key = `${ctx().chatId}|${name}`;
         if (lockWarned !== key) {
             lockWarned = key;
             toast.warn(`แชทนี้ล็อกไว้กับ preset “${esc(name)}” แต่หา preset นี้ไม่พบ (ถูกลบหรือเปลี่ยนชื่อ?)`);
+        }
+        return;
+    }
+    // Back on another preset again right after we switched: something else is choosing presets for this chat.
+    if (looping(lockRounds, key)) {
+        if (lockFightWarned !== key) {
+            lockFightWarned = key;
+            const cur = currentPresetName();
+            console.warn(LOG, `chat lock: preset keeps changing back to “${cur}”; stopped switching to “${name}” for this chat`);
+            toast.warn(`แชทนี้ล็อกไว้กับ “${esc(name)}” แต่มีอย่างอื่นสลับกลับเป็น “${esc(cur)}” ซ้ำ ๆ (เช่น Character Locks/STCL หรือ connection profile ที่เก็บ preset ไว้) หยุดสลับให้ในแชทนี้แล้ว กันหน้าค้าง`);
         }
         return;
     }
@@ -609,6 +640,8 @@ function registerCommands() {
  */
 
 let enforcing = false;
+const enforceRounds = new Map(); // chat -> times we switched scripts back on (see looping)
+let enforceWarned = '';
 
 const allOn = scripts => scripts.map(x => (x?.disabled ? { ...x, disabled: false } : x));
 const anyOff = scripts => Array.isArray(scripts) && scripts.some(x => x?.disabled);
@@ -617,6 +650,20 @@ async function enforceRegexOn() {
     const s = settings();
     if (enforcing || (!s.scopedAlwaysOn && !s.presetScriptsAlwaysOn)) return;
     const c = ctx();
+    const scopedOff = s.scopedAlwaysOn && c.characterId !== undefined && c.characterId !== null && !c.groupId
+        && anyOff(c.characters?.[c.characterId]?.data?.extensions?.regex_scripts);
+    const presetOff = s.presetScriptsAlwaysOn && isChatCompletion()
+        && anyOff(presetManager()?.readPresetExtensionField({ path: 'regex_scripts' }));
+    if (!scopedOff && !presetOff) return;
+    const key = String(c.chatId ?? '');
+    if (looping(enforceRounds, key)) {
+        if (enforceWarned !== key) {
+            enforceWarned = key;
+            console.warn(LOG, 'regex scripts keep getting switched off again; stopped switching them on for this chat');
+            toast.warn('regex ของการ์ด/preset ถูกปิดซ้ำทุกครั้งที่เปิดกลับ (น่าจะมี Regex Preset จาก connection profile, Character Locks หรือสคริปต์ของ preset ตั้งซ้ำอยู่) หยุดเปิดกลับให้ในแชทนี้แล้ว กันหน้าค้าง');
+        }
+        return;
+    }
     enforcing = true;
     const turnedOn = [];
     try {
