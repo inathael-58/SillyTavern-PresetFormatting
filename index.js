@@ -18,12 +18,15 @@
  *
  * A chat can also be locked to a preset (chat_metadata.presetFormatting.lockedPreset):
  * opening the chat switches to that preset and leaves the connection alone.
+ *
+ * A newer version of a preset can take over the old one's name (asked on import, or from the editor),
+ * so whatever points at that name keeps working.
  */
 
 const MODULE = 'preset_formatting';
 const FIELD = 'presetFormatting';
 const LOG = '[PresetFormatting]';
-const VERSION = '1.4.1'; // keep in sync with manifest.json
+const VERSION = '1.5.0'; // keep in sync with manifest.json
 const BASE_URL = new URL('.', import.meta.url);
 
 const DEFAULTS = Object.freeze({
@@ -35,6 +38,7 @@ const DEFAULTS = Object.freeze({
     scopedAlwaysOn: true,
     presetScriptsAlwaysOn: false,
     chatLock: true,
+    askOnImport: true,
 });
 
 /** What a preset can carry, and the SillyTavern control each one drives. */
@@ -230,12 +234,148 @@ async function onPresetChanged(e) {
     syncTopBar();
     syncLockUi();
     renderEditor();
-    if (!settings().enabled) return;
     const name = e?.name ?? currentPresetName();
+    if (pendingImport) {
+        const fresh = Date.now() - pendingImport.at < 30_000;
+        pendingImport = null;
+        // Not awaited: SillyTavern waits for PRESET_CHANGED handlers before the import is done.
+        if (fresh) setTimeout(() => offerReplace(name, { imported: true }), 0);
+    }
+    if (!settings().enabled) return;
     const fmt = readFormat(name);
     if (!Object.keys(fmt).length) return;
     const done = applyFormat(fmt);
     if (done.length && settings().notify) toast.info(`${esc(name)} → ${esc(done.join(' · '))}`);
+}
+
+// ---------------------------------------------------------------- newer version of a preset
+//
+// A preset update usually arrives as a file with another name ("Kyoto RP v2"), which leaves the old
+// version in the list and breaks everything that points at the old name (chat locks, connection
+// profiles, Character Locks). Here the newer one can take over the old name: its content is written
+// into the old preset's file, and the newly imported copy is removed.
+
+/** Name with version numbers and punctuation stripped, to guess which preset an import updates. */
+const presetKey = n => String(n ?? '').toLowerCase()
+    .replace(/\bv(?:er(?:sion)?)?\.?\s*\d+(?:[._-]\d+)*[a-z]?\b/g, ' ')
+    .replace(/\d+(?:[._]\d+)+/g, ' ')
+    .replace(/[\s\-_.,()[\]{}]+\d*\s*$/g, ' ')
+    .replace(/[\s\-_.,()[\]{}]+/g, ' ')
+    .trim();
+
+function guessOlder(newName, names) {
+    const k = presetKey(newName);
+    if (!k) return '';
+    return names.find(n => n !== newName && presetKey(n) === k)
+        ?? names.find(n => n !== newName && presetKey(n).length >= 4 && (k.startsWith(presetKey(n)) || presetKey(n).startsWith(k)))
+        ?? '';
+}
+
+function downloadJson(obj, fileName) {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 4)], { type: 'application/json' }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: fileName });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/**
+ * Put `newName`'s content under `oldName` and remove `newName`.
+ * @param {{ keepFormat?: boolean, backup?: boolean }} opts keepFormat: keep the old preset's formatting
+ */
+async function replacePreset(oldName, newName, { keepFormat = true, backup = false } = {}) {
+    const pm = presetManager();
+    const { presets, preset_names } = pm.getPresetList();
+    const fresh = pm.getCompletionPresetByName(newName);
+    const old = pm.getCompletionPresetByName(oldName);
+    if (!fresh || !old || preset_names[oldName] === undefined) throw new Error(`preset not found: ${!fresh ? newName : oldName}`);
+    if (backup) downloadJson(old, `${oldName} (ก่อนแทนที่).json`);
+
+    const body = structuredClone(fresh);
+    const oldFmt = readFormat(oldName);
+    if (keepFormat && Object.keys(oldFmt).length) {
+        body.extensions = { ...(body.extensions && typeof body.extensions === 'object' ? body.extensions : {}), [FIELD]: oldFmt };
+    }
+    await pm.savePreset(oldName, body, { skipUpdate: true });
+    presets[preset_names[oldName]] = body;
+
+    // Select the old name before deleting, so SillyTavern does not jump to the first preset in the list.
+    const cur = currentPresetName();
+    if (cur === oldName || cur === newName) await pm.selectPreset(pm.findPreset(oldName));
+    if (!(await pm.deletePreset(newName))) toast.warn(`ลบ “${esc(newName)}” ออกจาก server ไม่สำเร็จ ลบเองได้จากรายการ preset`);
+    await ctx().eventSource.emit(ctx().event_types.PRESET_DELETED, { apiId: 'openai', name: newName });
+    if (chatLock() === newName) await setChatLock(oldName);
+    save();
+    syncTopBar();
+    renderEditor();
+    toast.ok(`“${esc(oldName)}” เป็นเวอร์ชันใหม่แล้ว (จาก “${esc(newName)}”)`);
+}
+
+/** Ask which existing preset `newName` is a newer version of, then replace it. */
+async function offerReplace(newName, { imported = false } = {}) {
+    const pm = presetManager();
+    if (!pm || !isChatCompletion()) return;
+    const { Popup, POPUP_TYPE, POPUP_RESULT } = ctx();
+    const names = pm.getAllPresets().filter(n => n && n !== newName);
+    if (!names.length) {
+        if (!imported) toast.info('ยังไม่มี preset ตัวอื่นให้แทนที่');
+        return;
+    }
+    const guess = guessOlder(newName, names);
+
+    const box = document.createElement('div');
+    box.className = 'pf_replace';
+    box.innerHTML = `
+        <h3>${imported ? `นำเข้า “${esc(newName)}” แล้ว` : `“${esc(newName)}”`}</h3>
+        <p>เป็นเวอร์ชันใหม่ของ preset ไหน? เลือกตัวเก่า แล้วเนื้อหาของ “${esc(newName)}” จะไปอยู่ใต้ชื่อเดิมแทน ตัวเก่าถูกเขียนทับ และ “${esc(newName)}” จะถูกลบออกจากรายการ</p>
+        <select class="text_pole pf_replace_old">
+            <option value="">— ไม่ใช่ เก็บเป็น preset แยก —</option>
+            ${names.map(n => `<option value="${esc(n)}"${n === guess ? ' selected' : ''}>${esc(n)}</option>`).join('')}
+        </select>
+        <label class="checkbox_label"><input type="checkbox" class="pf_replace_fmt" checked> ใช้รูปแบบประจำ preset ของตัวเก่าต่อ <small class="pf_replace_fmt_sum"></small></label>
+        <label class="checkbox_label"><input type="checkbox" class="pf_replace_backup"> ดาวน์โหลดไฟล์ตัวเก่าเก็บไว้ก่อน</label>
+        <small class="pf_note">ล็อกแชท · connection profile · Character Locks ที่อ้างชื่อเดิมไว้ยังใช้ได้เหมือนเดิม</small>`;
+    const sel = /** @type {HTMLSelectElement} */ (box.querySelector('.pf_replace_old'));
+    const fmtRow = box.querySelector('.pf_replace_fmt').closest('label');
+    const syncFmt = () => {
+        const sum = sel.value ? summaryOf(readFormat(sel.value)) : '';
+        fmtRow.hidden = !sum;
+        box.querySelector('.pf_replace_fmt_sum').textContent = sum ? `(${sum})` : '';
+    };
+    sel.addEventListener('change', syncFmt);
+    syncFmt();
+
+    const res = await new Popup(box, POPUP_TYPE.CONFIRM, '', { okButton: 'แทนที่ตัวเก่า', cancelButton: 'ไม่ต้อง' }).show();
+    const oldName = sel.value;
+    if (res !== POPUP_RESULT.AFFIRMATIVE || !oldName) return;
+    try {
+        await replacePreset(oldName, newName, {
+            keepFormat: !!(/** @type {HTMLInputElement} */ (box.querySelector('.pf_replace_fmt')).checked),
+            backup: !!(/** @type {HTMLInputElement} */ (box.querySelector('.pf_replace_backup')).checked),
+        });
+    } catch (e) {
+        console.error(LOG, 'replace preset', e);
+        toast.warn('แทนที่ preset ไม่สำเร็จ ดู console');
+    }
+}
+
+let pendingImport = null; // { at } between OAI_PRESET_IMPORT_READY and the PRESET_CHANGED that follows it
+
+function onPresetImportReady(e) {
+    const pm = presetManager();
+    const name = String(e?.presetName ?? '');
+    if (!pm || !name || !e?.data || typeof e.data !== 'object') return;
+    if (pm.findPreset(name) !== undefined) {
+        // Overwriting a preset of the same name: an update made without this extension has no formatting, keep ours.
+        const oldFmt = readFormat(name);
+        if (Object.keys(oldFmt).length && !Object.keys(normalize(e.data.extensions?.[FIELD])).length) {
+            e.data.extensions = { ...(e.data.extensions && typeof e.data.extensions === 'object' ? e.data.extensions : {}), [FIELD]: oldFmt };
+            toast.info(`เก็บรูปแบบประจำ preset ของ “${esc(name)}” ไว้ให้แล้ว`);
+        }
+        return;
+    }
+    if (settings().askOnImport) pendingImport = { at: Date.now() };
 }
 
 // ---------------------------------------------------------------- editor under the preset dropdown
@@ -285,6 +425,7 @@ function buildEditor() {
             <div class="pf_btns">
                 <div id="pf_capture" class="menu_button" title="ติ๊กทุกช่องแล้วใส่ค่าที่ SillyTavern ใช้อยู่ตอนนี้"><i class="fa-solid fa-camera"></i> ดึงค่าที่ใช้อยู่</div>
                 <div id="pf_clear" class="menu_button" title="เลิกให้ preset นี้กำหนดค่าใด ๆ"><i class="fa-solid fa-eraser"></i> ล้าง</div>
+                <div id="pf_replace" class="menu_button" title="ให้ preset นี้ไปแทนตัวเก่า โดยใช้ชื่อของตัวเก่า แล้วลบชื่อนี้ออก"><i class="fa-solid fa-code-compare"></i> เป็นเวอร์ชันใหม่ของ…</div>
             </div>
             <small id="pf_editor_warn" class="pf_warn"></small>
         </div>`;
@@ -322,6 +463,7 @@ function buildEditor() {
         fillEditor({});
         commitEditor({});
     });
+    $id('pf_replace').addEventListener('click', () => offerReplace(currentPresetName()));
 
     // Keep the template list in step with SillyTavern's (templates can be added/renamed/deleted).
     const rs = $id('reasoning_select');
@@ -769,6 +911,7 @@ function renderSettings() {
                 <label class="checkbox_label"><input type="checkbox" id="pf_topbar"> ช่องเลือก preset บนแถบ Chat Top Info Bar</label>
                 <label class="checkbox_label" title="ข้อความ API – model ด้านขวาของแถบกินที่ ซ่อนเมื่อจอกว้างไม่ถึง 600px"><input type="checkbox" id="pf_hidestatus"> ซ่อนข้อความ API – model บนจอแคบ</label>
                 <small id="pf_topbar_state" class="pf_note"></small>
+                <label class="checkbox_label"><input type="checkbox" id="pf_askimport"> นำเข้า preset แล้วถามว่าเป็นเวอร์ชันใหม่ของตัวไหน</label>
 
                 <div class="pf_set_title">ล็อก preset กับแชท</div>
                 <label class="checkbox_label"><input type="checkbox" id="pf_chatlock"> เปิดแชทที่ล็อกไว้แล้วสลับไป preset นั้นให้</label>
@@ -812,6 +955,7 @@ function renderSettings() {
     bind('pf_hidestatus', 'hideStatusNarrow', applyBodyClasses);
     bind('pf_scoped_on', 'scopedAlwaysOn', enforceRegexOn);
     bind('pf_presetrx_on', 'presetScriptsAlwaysOn', enforceRegexOn);
+    bind('pf_askimport', 'askOnImport');
     bind('pf_chatlock', 'chatLock', () => { syncLockUi(); applyChatLockSoon(); });
     $id('pf_lock_toggle').addEventListener('click', () => toggleChatLock());
 
@@ -915,6 +1059,7 @@ function init() {
     eventSource.on(E.PRESET_CHANGED, () => enforceRegexOnSoon());
     eventSource.on(E.CHAT_CHANGED, () => enforceRegexOnSoon());
     eventSource.on(E.CHAT_CHANGED, () => { syncLockUi(); applyChatLockSoon(); });
+    if (E.OAI_PRESET_IMPORT_READY) eventSource.on(E.OAI_PRESET_IMPORT_READY, onPresetImportReady);
     if (E.MAIN_API_CHANGED) eventSource.on(E.MAIN_API_CHANGED, () => { syncTopBar(); renderEditor(); });
     registerCommands();
     let started = false;
@@ -938,7 +1083,7 @@ function init() {
 
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForNewVersion(); });
     setTimeout(checkForNewVersion, 3000);
-    globalThis.PresetFormatting = { VERSION, checkForNewVersion, reloadWithFreshFiles, readFormat, writeFormat, applyFormat, settings, syncTopBar, renderEditor, getChatLock: chatLock, setChatLock, applyChatLock };
+    globalThis.PresetFormatting = { VERSION, checkForNewVersion, reloadWithFreshFiles, readFormat, writeFormat, applyFormat, settings, syncTopBar, renderEditor, getChatLock: chatLock, setChatLock, applyChatLock, replacePreset, offerReplace };
     console.log(LOG, 'loaded', `v${VERSION}`);
 }
 

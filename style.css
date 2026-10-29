@@ -228,3 +228,24 @@
     opacity: 0.6;
     font-weight: normal;
 }
+
+/* "newer version of…" popup */
+.pf_replace {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    text-align: left;
+}
+
+.pf_replace h3 {
+    margin: 0;
+    text-align: center;
+}
+
+.pf_replace p {
+    margin: 0;
+}
+
+.pf_replace label[hidden] {
+    display: none;
+}
